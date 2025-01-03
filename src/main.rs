@@ -3,7 +3,6 @@ use memchr::memchr;
 use memchr::memrchr;
 use std::collections::HashSet;
 use std::env::args;
-use std::io::Read;
 use std::sync::Mutex;
 use std::thread;
 use std::thread::available_parallelism;
@@ -69,7 +68,7 @@ fn run(mut data: &[u8]) -> HashMap<&[u8], Record> {
 
 fn main() {
     let filename = args().nth(1).unwrap_or("measurements.txt".to_string());
-    let mut data = Vec::new();
+    let data = Vec::new();
     std::fs::read(filename).expect("Could not read file");
 
     let results = Mutex::new(Vec::new());
