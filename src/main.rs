@@ -1,7 +1,12 @@
 use hashbrown::HashMap;
 use memchr::memchr;
+use memchr::memrchr;
+use std::collections::HashSet;
 use std::env::args;
 use std::io::Read;
+use std::sync::Mutex;
+use std::thread;
+use std::thread::available_parallelism;
 
 struct Record {
     count: i32,
@@ -30,6 +35,36 @@ impl Record {
     fn avg(&self) -> i32 {
         self.sum / self.count as i32
     }
+
+    fn merge(&mut self, other: &Self) {
+        self.count += other.count;
+        self.sum += other.sum;
+        self.min = self.min.min(other.min);
+        self.max = self.max.max(other.max);
+    }
+}
+
+fn run(mut data: &[u8]) -> HashMap<&[u8], Record> {
+    let mut h = HashMap::new();
+
+    loop {
+        let Some(sep) = memchr(b';', data) else {
+            break;
+        };
+        let Some(end) = memchr(b'\n', &data[sep..]) else {
+            println!(
+                "No newline found for {:?}",
+                std::str::from_utf8(data).unwrap()
+            );
+            break;
+        };
+        let name = &data[..sep];
+        let value = &data[sep + 1..sep + end];
+        h.entry(name).or_insert(Record::default()).add(parse(value));
+        data = &data[sep + end + 1..];
+    }
+
+    h
 }
 
 fn main() {
@@ -40,24 +75,56 @@ fn main() {
         .read_to_string(&mut data)
         .expect("Could not read file");
 
-    let mut h = HashMap::new();
-    let mut data = data.as_bytes();
-    loop {
-        let Some(sep) = memchr(b';', data) else {
-            break;
-        };
-        let end = memchr(b'\n', &data[sep..]).unwrap();
-        let name = &data[..sep];
-        let value = &data[sep + 1..sep + end];
-        h.entry(name).or_insert(Record::default()).add(parse(value));
-        data = &data[sep + end + 1..];
-    }
+    let results = Mutex::new(Vec::new());
+    let cities = Mutex::new(HashSet::new());
+    let data = data.as_bytes();
+    let num_threads = available_parallelism().unwrap();
+    thread::scope(|s| {
+        let chunk_size = data.len() / num_threads;
 
-    let mut v: Vec<_> = h.iter().collect();
-    v.sort_unstable_by_key(|p| p.0);
-    for (name, r) in v {
+        // make sure each chunk starts at a newline and ends at a newline
+        let mut start = 0;
+        loop {
+            if start + chunk_size >= data.len() {
+                break;
+            }
+            let chunk = &data[start..(start + chunk_size)];
+            let end = memrchr(b'\n', chunk).unwrap() + 1;
+            let data = &data[start..(start + end)];
+            /*
+            let head = std::str::from_utf8(&data[0..30]).unwrap();
+            let tail = std::str::from_utf8(&data[(data.len() - 30)..]).unwrap();
+            println!("{:?}...{:?}", head, tail);
+            */
+            s.spawn(|| {
+                let rec = run(data);
+
+                cities.lock().unwrap().extend(rec.keys());
+                results.lock().unwrap().push(rec);
+            });
+            start += chunk.len() - (chunk.len() - end);
+        }
+    });
+
+    let cities = cities.lock().unwrap();
+    let mut sorted_cities = cities.iter().collect::<Vec<_>>();
+    sorted_cities.sort();
+    for name in sorted_cities {
+        let r = results
+            .lock()
+            .unwrap()
+            .iter()
+            .fold(Record::default(), |acc, x| {
+                if let Some(v) = x.get(*name) {
+                    let mut acc = acc;
+                    acc.merge(v);
+                    acc
+                } else {
+                    acc
+                }
+            });
         println!(
-            "{}: {}/{}/{}",
+            "{:?}: {}/{}/{}",
             String::from_utf8_lossy(name),
             format(r.min),
             format(r.avg()),
