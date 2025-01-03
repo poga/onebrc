@@ -69,42 +69,44 @@ fn run(mut data: &[u8]) -> HashMap<&[u8], Record> {
 
 fn main() {
     let filename = args().nth(1).unwrap_or("measurements.txt".to_string());
-    let mut data = String::new();
-    std::fs::File::open(filename)
-        .expect("Could not open file")
-        .read_to_string(&mut data)
-        .expect("Could not read file");
+    let mut data = Vec::new();
+    std::fs::read(filename).expect("Could not read file");
 
     let results = Mutex::new(Vec::new());
     let cities = Mutex::new(HashSet::new());
-    let data = data.as_bytes();
     let num_threads = available_parallelism().unwrap();
-    thread::scope(|s| {
-        let chunk_size = data.len() / num_threads;
+    let mut chunks = Vec::new();
+    let chunk_size = data.len() / num_threads;
+    println!("Using {} threads", num_threads);
 
-        // make sure each chunk starts at a newline and ends at a newline
-        let mut start = 0;
-        loop {
-            if start + chunk_size >= data.len() {
-                break;
-            }
-            let chunk = &data[start..(start + chunk_size)];
-            let end = memrchr(b'\n', chunk).unwrap() + 1;
-            let data = &data[start..(start + end)];
-            /*
-            let head = std::str::from_utf8(&data[0..30]).unwrap();
-            let tail = std::str::from_utf8(&data[(data.len() - 30)..]).unwrap();
-            println!("{:?}...{:?}", head, tail);
-            */
+    let t = std::time::Instant::now();
+
+    // make sure each chunk starts at a newline and ends at a newline
+    let mut start = 0;
+    loop {
+        if start + chunk_size >= data.len() {
+            break;
+        }
+        let chunk = &data[start..(start + chunk_size)];
+        let end = memrchr(b'\n', chunk).unwrap() + 1;
+        chunks.push((start, end));
+        start += chunk.len() - (chunk.len() - end);
+    }
+    println!("Chunking took {:?}", t.elapsed());
+
+    let t = std::time::Instant::now();
+    thread::scope(|s| {
+        for (start, end) in chunks {
+            let data = &data[start..start + end];
             s.spawn(|| {
                 let rec = run(data);
 
                 cities.lock().unwrap().extend(rec.keys());
                 results.lock().unwrap().push(rec);
             });
-            start += chunk.len() - (chunk.len() - end);
         }
     });
+    println!("Processing took {:?}", t.elapsed());
 
     let cities = cities.lock().unwrap();
     let mut sorted_cities = cities.iter().collect::<Vec<_>>();
@@ -124,7 +126,7 @@ fn main() {
                 }
             });
         println!(
-            "{:?}: {}/{}/{}",
+            "{}: {}/{}/{}",
             String::from_utf8_lossy(name),
             format(r.min),
             format(r.avg()),
